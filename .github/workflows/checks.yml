@@ -22,7 +22,7 @@ jobs:
         run: |
           cp .env.example .env
           docker compose up -d --build
-          curl --retry 20 --retry-delay 2 --retry-connrefused --fail http://localhost:8080/ --output /dev/null
+          curl --retry 20 --retry-delay 2 --retry-all-errors --retry-max-time 90 --max-time 5 --fail --silent --show-error http://localhost:8080/ --output /dev/null
       - name: Check PHP syntax
         run: docker compose exec -T web php tests/lint.php
       - name: Exercise marketplace workflows
