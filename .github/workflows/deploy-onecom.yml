@@ -1,0 +1,37 @@
+name: Deploy to one.com
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: onecom-deployment
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml
+  deploy:
+    needs: checks
+    runs-on: ubuntu-latest
+    environment: one.com
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install SFTP client library
+        run: python3 -m pip install -r deploy/requirements.txt
+      - name: Upload application and public assets
+        env:
+          ONECOM_SFTP_HOST: ${{ secrets.ONECOM_SFTP_HOST }}
+          ONECOM_SFTP_PORT: ${{ vars.ONECOM_SFTP_PORT || '22' }}
+          ONECOM_SFTP_USER: ${{ secrets.ONECOM_SFTP_USER }}
+          ONECOM_SFTP_PASSWORD: ${{ secrets.ONECOM_SFTP_PASSWORD }}
+          ONECOM_SSH_KEY: ${{ secrets.ONECOM_SSH_KEY }}
+          ONECOM_FILE_DIR: ${{ secrets.ONECOM_FILE_DIR || vars.ONECOM_FILE_DIR }}
+          ONECOM_PRIVATE_DIR: ${{ secrets.ONECOM_PRIVATE_DIR || vars.ONECOM_PRIVATE_DIR }}
+          ONECOM_KNOWN_HOSTS: ${{ secrets.ONECOM_KNOWN_HOSTS || vars.ONECOM_KNOWN_HOSTS }}
+        run: python3 deploy/onecom.py

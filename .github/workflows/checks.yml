@@ -1,0 +1,35 @@
+name: Application checks
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check deployment packaging
+        run: python3 -m unittest discover -s tests -p 'test_deploy.py' -v
+      - name: Start test site
+        run: |
+          cp .env.example .env
+          docker compose up -d --build
+          curl --retry 20 --retry-delay 2 --retry-connrefused --fail http://localhost:8080/ --output /dev/null
+      - name: Check PHP syntax
+        run: docker compose exec -T web php tests/lint.php
+      - name: Exercise marketplace workflows
+        run: python3 tests/e2e.py http://localhost:8080
+      - name: Show service logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+      - name: Stop test site
+        if: always()
+        run: docker compose down -v
