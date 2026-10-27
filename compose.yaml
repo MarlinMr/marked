@@ -31,8 +31,12 @@ services:
     volumes:
       - database:/var/lib/mysql
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p$$MYSQL_ROOT_PASSWORD --silent"]
+      test:
+        - CMD-SHELL
+        - 'MYSQL_PWD="$${MYSQL_PASSWORD}" mysql --protocol=TCP --host=127.0.0.1 --user="$${MYSQL_USER}" --database="$${MYSQL_DATABASE}" --connect-timeout=3 --execute="SELECT 1" --silent > /dev/null'
       interval: 5s
+      timeout: 5s
+      start_period: 30s
       retries: 30
   mailpit:
     image: axllent/mailpit:v1.27
