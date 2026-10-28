@@ -1,0 +1,38 @@
+name: Process marketplace email
+
+on:
+  schedule:
+    - cron: '2-57/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: onecom-mail-worker
+  cancel-in-progress: false
+
+jobs:
+  mail:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: one.com
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install SSH client library
+        run: python3 -m pip install -r deploy/requirements.txt
+      - name: Generate due digests and deliver queued email
+        env:
+          ONECOM_SFTP_HOST: ${{ secrets.ONECOM_SFTP_HOST }}
+          ONECOM_SFTP_PORT: ${{ vars.ONECOM_SFTP_PORT || '22' }}
+          ONECOM_SFTP_USER: ${{ secrets.ONECOM_SFTP_USER }}
+          ONECOM_SFTP_PASSWORD: ${{ secrets.ONECOM_SFTP_PASSWORD }}
+          ONECOM_SSH_KEY: ${{ secrets.ONECOM_SSH_KEY }}
+          ONECOM_FILE_DIR: ${{ secrets.ONECOM_FILE_DIR || vars.ONECOM_FILE_DIR }}
+          ONECOM_PRIVATE_DIR: ${{ secrets.ONECOM_PRIVATE_DIR || vars.ONECOM_PRIVATE_DIR }}
+          ONECOM_KNOWN_HOSTS: ${{ secrets.ONECOM_KNOWN_HOSTS || vars.ONECOM_KNOWN_HOSTS }}
+          ONECOM_PHP_BIN: ${{ vars.ONECOM_PHP_BIN || 'php' }}
+        run: python3 -m deploy.worker

@@ -4,6 +4,7 @@ No remote shell, production database access, or production .env download is used
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import errno
 import io
 import os
@@ -164,7 +165,7 @@ def verify_private_http(sftp, public: str, private: str, site_url: str) -> None:
                 sftp.remove(path)
 
 
-def deploy(sftp, public_setting: str, private_setting: str = "", site_url: str = "") -> tuple[int, bool]:
+def resolve_paths(sftp, public_setting: str, private_setting: str = "") -> tuple[str, str]:
     # Canonicalize existing parents so symlink aliases cannot put private files
     # at an unexpected location. Relative settings are relative to the SFTP home.
     public = clean_path(sftp.normalize(clean_path(public_setting)))
@@ -175,6 +176,11 @@ def deploy(sftp, public_setting: str, private_setting: str = "", site_url: str =
     private = posixpath.join(parent, posixpath.basename(private_requested))
     if exists(sftp, private):
         private = clean_path(sftp.normalize(private))
+    return public, private
+
+
+def deploy(sftp, public_setting: str, private_setting: str = "", site_url: str = "") -> tuple[int, bool]:
+    public, private = resolve_paths(sftp, public_setting, private_setting)
     nested = public != private and posixpath.commonpath([public, private]) == public
     if nested:
         if not private_setting:
@@ -201,12 +207,12 @@ def deploy(sftp, public_setting: str, private_setting: str = "", site_url: str =
     return count, exists(sftp, posixpath.join(private, ".env"))
 
 
-def main() -> int:
+@contextmanager
+def ssh_connection():
     import paramiko
 
     host = required("ONECOM_SFTP_HOST")
     username = required("ONECOM_SFTP_USER")
-    public = required("ONECOM_FILE_DIR")
     known_hosts = required("ONECOM_KNOWN_HOSTS")
     key_text = os.environ.get("ONECOM_SSH_KEY", "").strip()
     password = os.environ.get("ONECOM_SFTP_PASSWORD", "") or None
@@ -226,15 +232,21 @@ def main() -> int:
             key = paramiko.PKey.from_path(key_path)
         try:
             client.connect(host, port=int(os.environ.get("ONECOM_SFTP_PORT", "22")), username=username, password=password, pkey=key, allow_agent=False, look_for_keys=False, timeout=30, auth_timeout=30, banner_timeout=30)
-            with client.open_sftp() as sftp:
-                count, configured = deploy(sftp, public, os.environ.get("ONECOM_PRIVATE_DIR", "").strip(), os.environ.get("ONECOM_SITE_URL", "").strip())
-            print(f"Uploaded {count} application/public files. Existing configuration and uploads were preserved.")
-            if not configured:
-                print("Initial setup: create .env beside the uploaded private .env.example, install the database schema, and configure mail jobs. The website returns HTTP 503 until .env exists.")
-            else:
-                print("Production .env exists. Database migrations and scheduled jobs are managed separately on the host.")
+            yield client
         finally:
             client.close()
+
+
+def main() -> int:
+    public = required("ONECOM_FILE_DIR")
+    with ssh_connection() as client:
+        with client.open_sftp() as sftp:
+            count, configured = deploy(sftp, public, os.environ.get("ONECOM_PRIVATE_DIR", "").strip(), os.environ.get("ONECOM_SITE_URL", "").strip())
+        print(f"Uploaded {count} application/public files. Existing configuration and uploads were preserved.")
+        if not configured:
+            print("Initial setup: create .env beside the uploaded private .env.example, install the database schema, and configure mail jobs. The website returns HTTP 503 until .env exists.")
+        else:
+            print("Production .env exists. Database migrations and scheduled jobs are managed separately on the host.")
     return 0
 
 

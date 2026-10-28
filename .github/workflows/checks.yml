@@ -17,7 +17,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Check deployment packaging
-        run: python3 -m unittest discover -s tests -p 'test_deploy.py' -v
+        run: python3 -m unittest discover -s tests -p 'test_deploy*.py' -v
       - name: Start test site
         run: |
           cp .env.example .env

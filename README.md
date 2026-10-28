@@ -86,7 +86,7 @@ With the Docker site running:
 
 ```sh
 docker compose exec -T web php tests/lint.php
-python3 -m unittest discover -s tests -p 'test_deploy.py' -v
+python3 -m unittest discover -s tests -p 'test_deploy*.py' -v
 python3 tests/e2e.py http://localhost:8080
 ```
 
@@ -99,6 +99,8 @@ Run it only against your local Docker site: test support requires `APP_ENV=local
 See [docs/deployment.md](docs/deployment.md) for document-root layouts, remote MySQL configuration, email, scheduled tasks, and initial administrator setup. Production credentials are supplied by you through the server's `.env`; the application does not need database access during development.
 
 The **Deploy to one.com** GitHub Actions workflow uses the `one.com` environment and your `ONECOM_*` settings. By default it puts application code/configuration/uploads outside the public directory. On hosting that only allows access inside the webroot, set `ONECOM_PRIVATE_DIR` to a child such as `<public-directory>/_marked` and `ONECOM_SITE_URL` to your HTTPS domain; deployment installs `.htaccess` denial and verifies HTTP 403 before uploading application files there. See the deployment guide for the required host-key setting, directory access, and first-run configuration. The workflow runs on manual dispatch after checks pass.
+
+If one.com has no cron, **Process marketplace email** uses GitHub Actions to run the installed digest and mail commands over SSH approximately every five minutes. It uses the same connection settings, reads SMTP configuration only on the host, and can be started manually for an immediate delivery run. GitHub scheduling delays can affect delivery time.
 
 ## Current boundaries
 

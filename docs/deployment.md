@@ -28,6 +28,7 @@ Configure these in the GitHub repository's **Settings → Environments → one.c
 | `ONECOM_PRIVATE_DIR` | Optional secret or variable | Existing-parent path for private application files; defaults to a sibling `marked-private` directory |
 | `ONECOM_SITE_URL` | Secret or variable | Canonical HTTPS website origin; required when the application folder is inside the public root |
 | `ONECOM_SFTP_PORT` | Optional variable | SFTP port; defaults to `22` |
+| `ONECOM_PHP_BIN` | Optional variable | SSH PHP executable used by the scheduled worker; defaults to `php` |
 
 Either a password or private key is required. If both are supplied, the client attempts key authentication and can use the password when the server rejects that key. A malformed/encrypted key must be corrected or the key secret removed to use password-only authentication.
 
@@ -92,7 +93,7 @@ python3 deploy/onecom.py
 Packaging checks require only Python's standard library:
 
 ```sh
-python3 -m unittest discover -s tests -p 'test_deploy.py' -v
+python3 -m unittest discover -s tests -p 'test_deploy*.py' -v
 ```
 
 ## 1. Application files and document root
@@ -183,7 +184,22 @@ Registration, password resets, messages, and trade events enqueue mail. Configur
 
 The digest command can run hourly; each saved search is processed no more than once per 24 hours. MySQL advisory locks prevent overlapping workers from processing the same queue simultaneously. Delivery failures are logged to PHP's error log and retried up to five attempts. To retry a failed delivery after fixing the configuration, reset its `mail_queue.attempts` to zero in the database management tool.
 
-If your plan has no scheduled tasks or CLI access, arrange a supported scheduler/worker before enabling registration and alerts. There is deliberately no publicly accessible endpoint that runs administrative jobs.
+### No cron on one.com: GitHub Actions worker
+
+The **Process marketplace email** workflow runs approximately every five minutes using GitHub's scheduler, and also supports **Run workflow** for an immediate manual run. It connects over SSH using the same `one.com` environment and `ONECOM_SFTP_HOST`, port, username/password or key, `ONECOM_KNOWN_HOSTS`, public directory, and private directory settings as deployment.
+
+It resolves the installed private directory over SFTP, checks that the console and `.env` exist, and executes:
+
+```sh
+php /resolved/private/path/bin/console.php digest
+php /resolved/private/path/bin/console.php mail
+```
+
+Mail credentials remain exclusively in the server's `.env`. The workflow does not download that file, upload application files, or reinstall the database. The hosting account must allow SSH commands, not just SFTP. If needed, set the optional GitHub environment variable `ONECOM_PHP_BIN` to the host's PHP executable path. The resolved SFTP filesystem path must also be accessible to the SSH session.
+
+After pushing the workflow to the default branch, open **Actions → Process marketplace email → Run workflow** to verify the first run. Subsequent runs are scheduled automatically; GitHub may delay scheduled executions, so email delivery is not guaranteed at an exact minute. Each saved search still produces at most one digest per 24 hours. If the repository or environment requires Actions/secret access to be enabled, enable it there. Check this workflow's logs for command output and mail errors.
+
+There is no need for one.com cron when using this workflow, and there is no public endpoint that runs administrative jobs.
 
 ## 5. Administrator setup
 
