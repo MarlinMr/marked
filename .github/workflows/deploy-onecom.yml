@@ -33,5 +33,6 @@ jobs:
           ONECOM_SSH_KEY: ${{ secrets.ONECOM_SSH_KEY }}
           ONECOM_FILE_DIR: ${{ secrets.ONECOM_FILE_DIR || vars.ONECOM_FILE_DIR }}
           ONECOM_PRIVATE_DIR: ${{ secrets.ONECOM_PRIVATE_DIR || vars.ONECOM_PRIVATE_DIR }}
+          ONECOM_SITE_URL: ${{ secrets.ONECOM_SITE_URL || vars.ONECOM_SITE_URL }}
           ONECOM_KNOWN_HOSTS: ${{ secrets.ONECOM_KNOWN_HOSTS || vars.ONECOM_KNOWN_HOSTS }}
         run: python3 deploy/onecom.py

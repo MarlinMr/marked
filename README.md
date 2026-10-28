@@ -98,7 +98,7 @@ Run it only against your local Docker site: test support requires `APP_ENV=local
 
 See [docs/deployment.md](docs/deployment.md) for document-root layouts, remote MySQL configuration, email, scheduled tasks, and initial administrator setup. Production credentials are supplied by you through the server's `.env`; the application does not need database access during development.
 
-The **Deploy to one.com** GitHub Actions workflow uses the `one.com` environment and your `ONECOM_*` settings. Since `ONECOM_FILE_DIR` is public, it uploads only public files there and puts application code/configuration/uploads in a separate private directory. See the deployment guide for the required host-key setting, directory access, and first-run configuration. The workflow runs on manual dispatch after checks pass.
+The **Deploy to one.com** GitHub Actions workflow uses the `one.com` environment and your `ONECOM_*` settings. By default it puts application code/configuration/uploads outside the public directory. On hosting that only allows access inside the webroot, set `ONECOM_PRIVATE_DIR` to a child such as `<public-directory>/_marked` and `ONECOM_SITE_URL` to your HTTPS domain; deployment installs `.htaccess` denial and verifies HTTP 403 before uploading application files there. See the deployment guide for the required host-key setting, directory access, and first-run configuration. The workflow runs on manual dispatch after checks pass.
 
 ## Current boundaries
 

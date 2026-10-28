@@ -1,4 +1,4 @@
-"""Deploy Marked through SFTP, keeping application files outside the public root.
+"""Deploy Marked through SFTP to private or verified HTTP-protected storage.
 
 No remote shell, production database access, or production .env download is used.
 """
@@ -13,6 +13,9 @@ import stat
 import sys
 import tempfile
 import uuid
+import urllib.error
+import urllib.parse
+import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP_LINE = "require dirname(__DIR__) . '/app/bootstrap.php';"
@@ -31,16 +34,16 @@ def clean_path(value: str) -> str:
     return posixpath.normpath(value)
 
 
-def validate_layout(public: str, private: str) -> None:
+def validate_layout(public: str, private: str, allow_nested: bool = False) -> None:
     if not public.startswith("/") or not private.startswith("/"):
         raise ValueError("Resolved deployment paths must be absolute.")
     common = posixpath.commonpath([public, private])
-    if common in (public, private):
+    if common == private or (common == public and not allow_nested):
         raise ValueError("Public and private directories must be separate, non-nested directories. If SFTP is jailed to the public root, this layout needs access to a private directory first.")
 
 
-def deployed_index(source: str, public: str, private: str) -> bytes:
-    validate_layout(public, private)
+def deployed_index(source: str, public: str, private: str, allow_nested: bool = False) -> bytes:
+    validate_layout(public, private, allow_nested)
     if source.count(BOOTSTRAP_LINE) != 1:
         raise ValueError("The public entry point changed; update the deployment packager.")
     relative = posixpath.relpath(private, public).replace("'", "\\'")
@@ -69,7 +72,7 @@ def private_files(root: Path = ROOT) -> list[tuple[str, bytes]]:
     return result
 
 
-def public_files(public: str, private: str, root: Path = ROOT) -> list[tuple[str, bytes]]:
+def public_files(public: str, private: str, root: Path = ROOT, allow_nested: bool = False) -> list[tuple[str, bytes]]:
     result = []
     for path in sorted((root / "public").rglob("*")):
         if path.is_symlink():
@@ -78,7 +81,7 @@ def public_files(public: str, private: str, root: Path = ROOT) -> list[tuple[str
             continue
         result.append((path.relative_to(root / "public").as_posix(), path.read_bytes()))
     # Switch the public entry point only after application code and assets arrive.
-    result.append(("index.php", deployed_index((root / "public/index.php").read_text(), public, private)))
+    result.append(("index.php", deployed_index((root / "public/index.php").read_text(), public, private, allow_nested)))
     return result
 
 
@@ -115,9 +118,55 @@ def put_atomic(sftp, destination: str, data: bytes, mode: int) -> None:
             sftp.remove(temporary)
 
 
-def deploy(sftp, public_setting: str, private_setting: str = "") -> tuple[int, bool]:
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def site_origin(site_url: str) -> str:
+    parsed = urllib.parse.urlsplit(site_url)
+    local = parsed.hostname in ("localhost", "127.0.0.1", "::1")
+    if not parsed.hostname or parsed.scheme not in ("http", "https") or (parsed.scheme != "https" and not local) or parsed.path not in ("", "/") or parsed.query or parsed.fragment or parsed.username or parsed.password:
+        raise ValueError("Set ONECOM_SITE_URL to the site's HTTPS origin, e.g. https://marked.example.no (without a subdirectory).")
+    return site_url.rstrip("/")
+
+
+def http_probe(url: str) -> tuple[int, bytes]:
+    request = urllib.request.Request(url, headers={"Cache-Control": "no-cache"})
+    opener = urllib.request.build_opener(NoRedirect())
+    try:
+        response = opener.open(request, timeout=20)
+    except urllib.error.HTTPError as error:
+        response = error
+    with response:
+        return response.code, response.read(256)
+
+
+def verify_private_http(sftp, public: str, private: str, site_url: str) -> None:
+    """Prove the URL maps to this upload and that the protected file returns 403."""
+    origin = site_origin(site_url)
+    marker = 'marked-check-' + uuid.uuid4().hex + '.txt'
+    token = uuid.uuid4().hex.encode()
+    paths = [posixpath.join(public, marker), posixpath.join(private, marker)]
+    try:
+        for path in paths:
+            put_atomic(sftp, path, token, 0o644)
+        status, body = http_probe(origin + '/' + marker)
+        if status != 200 or body != token:
+            raise ValueError("ONECOM_SITE_URL does not serve the uploaded public directory directly. Use its canonical HTTPS domain without redirects.")
+        relative = urllib.parse.quote(posixpath.relpath(private, public), safe='/')
+        status, _ = http_probe(origin + '/' + relative + '/' + marker)
+        if status != 403:
+            raise ValueError(f"Protected application directory returned HTTP {status}, not 403. Application files were not uploaded; check .htaccess support.")
+    finally:
+        for path in paths:
+            if exists(sftp, path):
+                sftp.remove(path)
+
+
+def deploy(sftp, public_setting: str, private_setting: str = "", site_url: str = "") -> tuple[int, bool]:
     # Canonicalize existing parents so symlink aliases cannot put private files
-    # inside the public root. Relative settings are relative to the SFTP home.
+    # at an unexpected location. Relative settings are relative to the SFTP home.
     public = clean_path(sftp.normalize(clean_path(public_setting)))
     if not stat.S_ISDIR(sftp.stat(public).st_mode):
         raise ValueError("ONECOM_FILE_DIR must be an existing public directory.")
@@ -126,10 +175,19 @@ def deploy(sftp, public_setting: str, private_setting: str = "") -> tuple[int, b
     private = posixpath.join(parent, posixpath.basename(private_requested))
     if exists(sftp, private):
         private = clean_path(sftp.normalize(private))
-    validate_layout(public, private)
+    nested = public != private and posixpath.commonpath([public, private]) == public
+    if nested:
+        if not private_setting:
+            raise ValueError("If SFTP is jailed to the public root, explicitly set ONECOM_PRIVATE_DIR for an HTTP-protected folder inside it.")
+        site_origin(site_url)
+    validate_layout(public, private, allow_nested=nested)
     private_manifest = private_files()
-    public_manifest = public_files(public, private)
+    public_manifest = public_files(public, private, allow_nested=nested)
     mkdirs(sftp, private, 0o750)
+    if nested:
+        # Install and verify HTTP denial before any application/config files.
+        put_atomic(sftp, posixpath.join(private, '.htaccess'), (ROOT / 'deploy/private.htaccess').read_bytes(), 0o644)
+        verify_private_http(sftp, public, private, site_url)
     for directory in ["storage/uploads", "storage/logs"]:
         mkdirs(sftp, posixpath.join(private, directory), 0o750)
     count = 0
@@ -169,7 +227,7 @@ def main() -> int:
         try:
             client.connect(host, port=int(os.environ.get("ONECOM_SFTP_PORT", "22")), username=username, password=password, pkey=key, allow_agent=False, look_for_keys=False, timeout=30, auth_timeout=30, banner_timeout=30)
             with client.open_sftp() as sftp:
-                count, configured = deploy(sftp, public, os.environ.get("ONECOM_PRIVATE_DIR", "").strip())
+                count, configured = deploy(sftp, public, os.environ.get("ONECOM_PRIVATE_DIR", "").strip(), os.environ.get("ONECOM_SITE_URL", "").strip())
             print(f"Uploaded {count} application/public files. Existing configuration and uploads were preserved.")
             if not configured:
                 print("Initial setup: create .env beside the uploaded private .env.example, install the database schema, and configure mail jobs. The website returns HTTP 503 until .env exists.")

@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
+import urllib.parse
 
 from deploy import onecom
 
@@ -90,8 +92,8 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(image.read_bytes(), b"keep this upload")
         self.assertEqual(unrelated.read_text(), "keep existing content")
 
-    def test_rejects_private_directory_inside_public_root(self):
-        with self.assertRaisesRegex(ValueError, "non-nested"):
+    def test_requires_site_url_for_private_directory_inside_public_root(self):
+        with self.assertRaisesRegex(ValueError, "ONECOM_SITE_URL"):
             onecom.deploy(self.sftp, self.public, self.public + "/private")
         self.assertEqual(self.sftp.uploaded, [])
 
@@ -126,6 +128,61 @@ class DeployTests(unittest.TestCase):
             onecom.put_atomic(self.sftp, destination, b"replacement", 0o644)
         self.assertEqual(self.sftp.local(destination).read_bytes(), b"previous entry point")
         self.assertFalse(list(Path(self.temp.name).rglob("*.tmp")))
+
+    def nested_probe(self, url):
+        relative = urllib.parse.unquote(urllib.parse.urlsplit(url).path).lstrip('/')
+        if relative.startswith('_marked/'):
+            htaccess = self.sftp.local(self.public + '/_marked/.htaccess')
+            self.assertEqual(htaccess.read_bytes(), b'Require all denied\n')
+            # Protection must be checked before application files are uploaded.
+            self.assertFalse((htaccess.parent / 'app/bootstrap.php').exists())
+            return 403, b'Forbidden'
+        return 200, self.sftp.local(self.public + '/' + relative).read_bytes()
+
+    def test_protected_nested_deployment_verifies_denial_before_uploading(self):
+        private = self.public + '/_marked'
+        with mock.patch.object(onecom, 'http_probe', side_effect=self.nested_probe) as probe:
+            _, configured = onecom.deploy(self.sftp, self.public, private, 'https://marked.example.test')
+        self.assertFalse(configured)
+        self.assertEqual(probe.call_count, 2)
+        self.assertTrue(self.sftp.local(private + '/app/bootstrap.php').is_file())
+        index = self.sftp.local(self.public + '/index.php').read_text()
+        self.assertIn("__DIR__ . '/_marked'", index)
+        self.assertFalse(list(Path(self.temp.name).rglob('marked-check-*')))
+
+    def test_denial_failure_aborts_before_application_upload_and_cleans_probes(self):
+        def exposed_probe(url):
+            relative = urllib.parse.unquote(urllib.parse.urlsplit(url).path).lstrip('/')
+            return 200, self.sftp.local(self.public + '/' + relative).read_bytes()
+        private = self.public + '/_marked'
+        with mock.patch.object(onecom, 'http_probe', side_effect=exposed_probe):
+            with self.assertRaisesRegex(ValueError, 'not 403'):
+                onecom.deploy(self.sftp, self.public, private, 'https://marked.example.test')
+        self.assertFalse(self.sftp.local(private + '/app').exists())
+        self.assertFalse(self.sftp.local(private + '/.env.example').exists())
+        self.assertFalse(self.sftp.local(self.public + '/index.php').exists())
+        self.assertFalse(list(Path(self.temp.name).rglob('marked-check-*')))
+        self.assertTrue(self.sftp.local(private + '/.htaccess').is_file())
+
+    def test_wrong_site_or_redirect_aborts_before_private_upload(self):
+        for status, body in [(200, b'wrong site'), (302, b'redirect'), (403, b'Forbidden')]:
+            with self.subTest(status=status, body=body):
+                with mock.patch.object(onecom, 'http_probe', return_value=(status, body)):
+                    with self.assertRaisesRegex(ValueError, 'ONECOM_SITE_URL'):
+                        onecom.deploy(self.sftp, self.public, self.public + '/_marked', 'https://marked.example.test')
+        self.assertFalse(self.sftp.local(self.public + '/_marked/app').exists())
+        self.assertFalse(list(Path(self.temp.name).rglob('marked-check-*')))
+
+    def test_nested_deployment_cannot_use_public_root_or_ancestor_as_private(self):
+        for private in [self.public, '/account']:
+            with self.assertRaisesRegex(ValueError, 'non-nested'):
+                onecom.deploy(self.sftp, self.public, private, 'https://marked.example.test')
+
+    def test_site_url_requires_https_origin_except_local_tests(self):
+        for url in ['', 'http://marked.example.test', 'https://marked.example.test/path', 'https://marked.example.test?query=1', 'https://user:password@marked.example.test']:
+            with self.assertRaises(ValueError):
+                onecom.site_origin(url)
+        self.assertEqual(onecom.site_origin('https://marked.example.test/'), 'https://marked.example.test')
 
 
 if __name__ == "__main__":

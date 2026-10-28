@@ -26,6 +26,7 @@ Configure these in the GitHub repository's **Settings → Environments → one.c
 | `ONECOM_FILE_DIR` | Secret or variable | Existing public website directory, e.g. `/account/public_html` |
 | `ONECOM_KNOWN_HOSTS` | Secret or variable | Verified SSH host-key entries in OpenSSH `known_hosts` format |
 | `ONECOM_PRIVATE_DIR` | Optional secret or variable | Existing-parent path for private application files; defaults to a sibling `marked-private` directory |
+| `ONECOM_SITE_URL` | Secret or variable | Canonical HTTPS website origin; required when the application folder is inside the public root |
 | `ONECOM_SFTP_PORT` | Optional variable | SFTP port; defaults to `22` |
 
 Either a password or private key is required. If both are supplied, the client attempts key authentication and can use the password when the server rejects that key. A malformed/encrypted key must be corrected or the key secret removed to use password-only authentication.
@@ -50,7 +51,27 @@ With `ONECOM_FILE_DIR=/account/public_html`, the default result is:
     assets/
 ```
 
-The SFTP account must be able to write to both directories, and PHP must be able to read the private application and write its upload directory. If one.com provides a specific private directory, set `ONECOM_PRIVATE_DIR` to it. The private directory must be outside every publicly served website root. The deployer resolves symlink paths and rejects overlapping public/private locations. If SFTP is jailed directly to the public root (`/`), the deployment stops: configure access to an outside private location first.
+The SFTP account must be able to write to both directories, and PHP must be able to read the private application and write its upload directory. If one.com provides a specific private directory, set `ONECOM_PRIVATE_DIR` to it. SSH and web PHP can have different filesystem views even when they report the same user ID and script path; a successful CLI migration does not prove that web PHP can access a directory under the SSH home.
+
+### Hosting restricted to the webroot
+
+If web PHP cannot see the SSH home directory and you cannot write beside the webroot, explicitly place the application in a protected child folder:
+
+```text
+ONECOM_FILE_DIR=/path/to/public-folder
+ONECOM_PRIVATE_DIR=/path/to/public-folder/_marked
+ONECOM_SITE_URL=https://your-domain.no
+```
+
+Use the actual SFTP paths for the first two values. If the SFTP account is jailed directly to the site root, those paths can be `/` and `/_marked`. `ONECOM_SITE_URL` must be the canonical HTTPS origin serving that directory, with no URL subdirectory or redirects.
+
+The deployer first installs `_marked/.htaccess` containing `Require all denied`. It then uploads harmless temporary marker files and verifies both that the website serves the public marker unchanged and that the protected marker returns HTTP **403**. Only after this succeeds are application files uploaded. Marker files are removed after the check. A missing/ignored `.htaccess`, wrong domain, redirect, or non-403 response aborts the deployment before application/configuration templates are uploaded.
+
+The generated public `index.php` uses `$markedPrivate = __DIR__ . '/_marked';`. Apache denies direct HTTP access to this directory, but PHP can read its files and serve authorized media through the application. After a successful deployment, copy your existing production `.env` to `_marked/.env`; keep the existing database. The folder is physically inside the webroot but is not intended to be web-accessible.
+
+Update any scheduled mail/digest commands to use the new `_marked/bin/console.php` filesystem path as well.
+
+Verify that `https://your-domain.no/_marked/.env.example` returns 403 before copying `.env`. Do not remove the child `.htaccess`; later deployments reinstall and verify it. The repository's `deploy/private.htaccess` is the exact access-denial file if you need to inspect it.
 
 The workflow uploads application files, the schema, a production environment template, and public assets. It excludes your local `.env`, demo seeder, demo media, Docker configuration, and tests. It preserves existing server configuration, user uploads, and unrelated files. Each file is replaced through OpenSSH's atomic-rename extension, with `index.php` published last; the deployment as a whole is not a transactional release or automatic rollback.
 
@@ -76,7 +97,7 @@ python3 -m unittest discover -s tests -p 'test_deploy.py' -v
 
 ## 1. Application files and document root
 
-The document root must contain only the contents of **`public/`**, not the repository root. The `.env`, application code, uploads, tests, and database files must not be publicly accessible.
+The document root normally contains only the contents of **`public/`**, not the repository root. On restricted hosting, it can additionally contain the HTTP-protected application folder described above. The `.env`, application code, uploads, tests, and database files must not be publicly accessible.
 
 Preferred layout:
 
